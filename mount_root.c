@@ -34,8 +34,10 @@ start(int argc, char *argv[3])
 	struct volume *data = volume_find("rootfs_data");
 	struct stat s;
 
-	if (!getenv("PREINIT") && stat("/tmp/.preinit", &s))
+	if (!getenv("PREINIT") && stat("/tmp/.preinit", &s)) {
+		ULOG_NOTE("mount_root: Not in preinit\n");
 		return -1;
+	}
 
 	if (!data) {
 		root = volume_find("rootfs");
@@ -43,14 +45,14 @@ start(int argc, char *argv[3])
 		if (argc < 3)
 			ULOG_NOTE("mounting /dev/root\n");
 		else
-			ULOG_NOTE("mounting /dev/root with options %s\n", argv[2]);
+			ULOG_NOTE("mounting /dev/root with options '%s'\n", argv[2]);
 
 		/*
 		 * If present, mount rootfs with passed options.
 		 * Example F2FS filesystem with compress_algorithm option.
 		 */
 		mount("/dev/root", "/", NULL, MS_NOATIME | MS_REMOUNT,
-		      argc < 3 ? 0 : argv[2]);
+		      argc < 3 ? NULL : argv[2]);
 	}
 
 	/* Check for extroot config in rootfs before even trying rootfs_data */
