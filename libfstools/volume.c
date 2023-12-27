@@ -18,6 +18,8 @@
 #include "libfstools.h"
 #include "volume.h"
 
+#include <libubox/ulog.h>
+
 static LIST_HEAD(drivers);
 
 void
@@ -44,9 +46,13 @@ struct volume* volume_find(char *name)
 		if (d->find) {
 			v = d->find(name);
 			if (v)
+			{
+				ULOG_NOTE("Found dev '%s' (driver '%s')\n", name, d->name);
 				return v;
+			}
 		}
 	}
 
+	ULOG_WARN("Dev '%s' not found\n", name);
 	return NULL;
 }

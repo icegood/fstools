@@ -153,8 +153,10 @@ static struct volume *mtd_volume_find(char *name)
 	struct volume *v;
 	char buffer[32];
 
-	if (!idx)
+	if (!idx) {
+		ULOG_NOTE("mtd: No index for dev '%s'\n", name);
 		return NULL;
+	}
 
 	p = calloc(1, sizeof(struct mtd_volume));
 	if (!p)

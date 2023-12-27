@@ -425,7 +425,7 @@ static struct uci_package * config_try_load(struct uci_context *ctx, char *path)
 
 	if (uci_load(ctx, file, &pkg)) {
 		uci_get_errorstr(ctx, &err, file);
-		ULOG_ERR("unable to load configuration (%s)\n", err);
+		ULOG_ERR("unable to load configuration in '%s' (%s)\n", dir, err);
 
 		free(err);
 		return NULL;
@@ -721,8 +721,9 @@ static int print_block_uci(struct probe_info *pr)
 			printf("\toption\ttarget\t'%s'\n", mp);
 			free(mp);
 		} else {
-			printf("\toption\ttarget\t'/mnt/%s'\n", basename(pr->dev));
+			printf("\toption\ttarget\t'/tmp/mnt/%s'\n", basename(pr->dev));
 		}
+		printf("\toption\tfstype\t'%s'\n", pr->type);
 	}
 	if (pr->uuid)
 		printf("\toption\tuuid\t'%s'\n", pr->uuid);
@@ -1077,7 +1078,7 @@ static int blockd_notify(const char *method, char *device, struct mount *m,
 	return err;
 }
 
-static int mount_device(struct probe_info *pr, int type)
+static int mount_device(struct probe_info *pr, int type, bool remount)
 {
 	struct mount *m;
 	struct stat st;
@@ -1107,7 +1108,7 @@ static int mount_device(struct probe_info *pr, int type)
 		return -1;
 
 	mp = find_mount_point(pr->dev);
-	if (mp) {
+	if (mp && !remount) {
 		if (m && m->type == TYPE_MOUNT && m->target && strcmp(m->target, mp)) {
 			ULOG_ERR("%s is already mounted on %s\n", pr->dev, mp);
 			err = -1;
@@ -1164,8 +1165,10 @@ static int mount_device(struct probe_info *pr, int type)
 
 	/* Mount the device */
 
-	if (check_fs)
-		check_filesystem(pr);
+	if (check_fs) {
+		ULOG_INFO("Try to check filesystem for %s\n", device);
+        check_filesystem(pr);
+    }
 
 	mkdir_p(target, 0755);
 	if (!lstat(target, &st) && S_ISLNK(st.st_mode))
@@ -1263,7 +1266,7 @@ static int mount_action(char *action, char *device, int type)
 	if (!path)
 		return -1;
 
-	return mount_device(find_block_info(NULL, NULL, path), type);
+	return mount_device(find_block_info(NULL, NULL, path), type, 0);
 }
 
 static int main_hotplug(int argc, char **argv)
@@ -1656,9 +1659,6 @@ static int main_extroot(int argc, char **argv)
 	make_devs();
 	cache_load(1);
 
-	/* enable LOG_INFO messages */
-	ulog_threshold(LOG_INFO);
-
 	/* try the currently mounted overlay if exists */
 	err = mount_extroot("/tmp/overlay");
 	if (!err)
@@ -1721,13 +1721,18 @@ static int main_extroot(int argc, char **argv)
 static int main_mount(int argc, char **argv)
 {
 	struct probe_info *pr;
+	bool remount = false;
 
 	if (config_load(NULL))
 		return -1;
 
+	if (argc > 2) {
+		remount = argv[2][0] == 'r';
+	}
+
 	cache_load(1);
 	list_for_each_entry(pr, &devices, list)
-		mount_device(pr, TYPE_DEV);
+		mount_device(pr, TYPE_DEV, remount);
 
 	handle_swapfiles(true);
 
@@ -1835,7 +1840,6 @@ static int main_swapon(int argc, char **argv)
 	int flags = 0;
 	int pri;
 	struct stat st;
-	int err;
 
 	while ((ch = getopt(argc, argv, "ap:s")) != -1) {
 		switch(ch) {
@@ -1859,7 +1863,7 @@ static int main_swapon(int argc, char **argv)
 				if (strcmp(pr->type, "swap"))
 					continue;
 				if (swapon(pr->dev, 0))
-					ULOG_ERR("failed to swapon %s\n", pr->dev);
+					ULOG_ERR("failed to swapon %s (%m)\n", pr->dev);
 			}
 			return 0;
 		case 'p':
@@ -1879,10 +1883,9 @@ static int main_swapon(int argc, char **argv)
 		ULOG_ERR("%s is not a block device or file\n", argv[optind]);
 		return -1;
 	}
-	err = swapon(argv[optind], flags);
-	if (err) {
-		ULOG_ERR("failed to swapon %s (%d)\n", argv[optind], err);
-		return err;
+	if (swapon(argv[optind], flags)) {
+		ULOG_ERR("failed to swapon %s (%m)\n", argv[optind]);
+		return -1;
 	}
 
 	return 0;
@@ -1943,7 +1946,7 @@ int main(int argc, char **argv)
 	umask(0);
 
 	ulog_open(-1, -1, "block");
-	ulog_threshold(LOG_NOTICE);
+	ulog_threshold(LOG_DEBUG);
 
 	if (!strcmp(base, "swapon"))
 		return main_swapon(argc, argv);

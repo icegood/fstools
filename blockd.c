@@ -303,7 +303,7 @@ block_hotplug(struct ubus_context *ctx, struct ubus_object *obj,
 	if (data[MOUNT_TARGET]) {
 		target = blobmsg_get_string(data[MOUNT_TARGET]);
 	} else {
-		if (asprintf(&_target, "/mnt/%s",
+		if (asprintf(&_target, "/tmp/mnt/%s",
 			     blobmsg_get_string(data[MOUNT_DEVICE])) == -1)
 			exit(ENOMEM);
 
