@@ -70,6 +70,7 @@ struct mount {
 	char *target;
 	char *path;
 	char *options;
+	char *fstype;
 	uint32_t flags;
 	char *uuid;
 	char *label;
@@ -114,6 +115,7 @@ enum {
 	MOUNT_DEVICE,
 	MOUNT_OPTIONS,
 	MOUNT_AUTOFS,
+	MOUNT_FSTYPE,
 	__MOUNT_MAX
 };
 
@@ -130,6 +132,7 @@ static const struct blobmsg_policy mount_policy[__MOUNT_MAX] = {
 	[MOUNT_OPTIONS] = { .name = "options", .type = BLOBMSG_TYPE_STRING },
 	[MOUNT_ENABLE] = { .name = "enabled", .type = BLOBMSG_TYPE_INT32 },
 	[MOUNT_AUTOFS] = { .name = "autofs", .type = BLOBMSG_TYPE_INT32 },
+	[MOUNT_FSTYPE] = { .name = "fstype", .type = BLOBMSG_TYPE_STRING },
 };
 
 static const struct uci_blob_param_list mount_attr_list = {
@@ -262,11 +265,16 @@ static int mount_add(struct uci_section *s)
 	uci_to_blob(&b, s, &mount_attr_list);
 	blobmsg_parse(mount_policy, __MOUNT_MAX, tb, blob_data(b.head), blob_len(b.head));
 
-	if (!tb[MOUNT_LABEL] && !tb[MOUNT_UUID] && !tb[MOUNT_DEVICE])
-		return -1;
+	if (!tb[MOUNT_LABEL] && !tb[MOUNT_UUID] && !tb[MOUNT_DEVICE] &&
+	    !(tb[MOUNT_FSTYPE] && !strcmp(blobmsg_get_string(tb[MOUNT_FSTYPE]), "tmpfs"))) {
+			ULOG_DEBUG("Section 'target=%s' is ignored\n", blobmsg_get_strdup(tb[MOUNT_TARGET]));
+			return -1;
+		}
 
-	if (tb[MOUNT_ENABLE] && !blobmsg_get_u32(tb[MOUNT_ENABLE]))
+	if (tb[MOUNT_ENABLE] && !blobmsg_get_u32(tb[MOUNT_ENABLE])) {
+		ULOG_DEBUG("Section 'target=%s' is disabled\n", blobmsg_get_strdup(tb[MOUNT_TARGET]));
 		return -1;
+	}
 
 	m = malloc(sizeof(struct mount));
 	m->type = TYPE_MOUNT;
@@ -274,6 +282,7 @@ static int mount_add(struct uci_section *s)
 	m->label = blobmsg_get_strdup(tb[MOUNT_LABEL]);
 	m->target = blobmsg_get_strdup(tb[MOUNT_TARGET]);
 	m->device = blobmsg_get_basename(tb[MOUNT_DEVICE]);
+	m->fstype = blobmsg_get_strdup(tb[MOUNT_FSTYPE]);
 	if (tb[MOUNT_AUTOFS])
 		m->autofs = blobmsg_get_u32(tb[MOUNT_AUTOFS]);
 	else
@@ -299,6 +308,8 @@ static int mount_add(struct uci_section *s)
 		vlist_add(&mounts, &m->node, m->label);
 	else if (m->device)
 		vlist_add(&mounts, &m->node, m->device);
+	else if (m->target)
+		vlist_add(&mounts, &m->node, m->target);
 
 	return 0;
 }
@@ -1718,9 +1729,52 @@ static int main_extroot(int argc, char **argv)
 	return mount_extroot(NULL);
 }
 
+static bool is_mounted(const char *target)
+{
+	FILE *fp = fopen("/proc/self/mountinfo", "r");
+	static char line[256];
+	char *pos, *tmp, *cpoint;
+	bool found = false;
+
+	if (!fp)
+		return false;
+
+	while (fgets(line, sizeof(line), fp)) {
+		/* skip first two fields (ids) */
+		pos = strchr(line, ' ');
+		if (!pos) continue;
+		pos = strchr(pos + 1, ' ');
+		if (!pos) continue;
+
+		/* skip major:minor */
+		pos = strchr(pos + 1, ' ');
+		if (!pos) continue;
+
+		/* skip root */
+		pos = strchr(pos + 1, ' ');
+		if (!pos) continue;
+
+		/* mountpoint */
+		tmp = ++pos;
+		pos = strchr(pos, ' ');
+		if (!pos) continue;
+		*pos = '\0';
+		cpoint = tmp;
+
+		if (!strcmp(cpoint, target)) {
+			found = true;
+			break;
+		}
+	}
+
+	fclose(fp);
+	return found;
+}
+
 static int main_mount(int argc, char **argv)
 {
 	struct probe_info *pr;
+	struct mount *m;
 	bool remount = false;
 
 	if (config_load(NULL))
@@ -1728,6 +1782,24 @@ static int main_mount(int argc, char **argv)
 
 	if (argc > 2) {
 		remount = argv[2][0] == 'r';
+	}
+
+	/* Handle pseudo-filesystem mounts (tmpfs, etc.) that have no block device */
+	vlist_for_each_element(&mounts, m, node) {
+		if (m->type != TYPE_MOUNT || !m->fstype || !m->target)
+			continue;
+
+		if (strcmp(m->fstype, "tmpfs") != 0)
+			continue;
+
+		if (is_mounted(m->target))
+			continue;
+
+		mkdir_p(m->target, 0755);
+		if (handle_mount(m->fstype, m->target, m->fstype, m) < 0)
+			ULOG_ERR("failed to mount %s on %s: %m\n", m->fstype, m->target);
+		else
+			ULOG_INFO("mounted tmpfs on %s\n", m->target);
 	}
 
 	cache_load(1);
